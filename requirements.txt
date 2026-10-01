@@ -1,0 +1,5 @@
+requests>=2.28
+tzdata
+# UI (Streamlit Cloud installs these; locally they live in .venv):
+streamlit>=1.64
+streamlit-aggrid>=1.2

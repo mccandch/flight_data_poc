@@ -1,0 +1,60 @@
+name: Daily flight scan
+
+on:
+  schedule:
+    # 13:17 UTC = 7:17 AM in summer (MDT), 6:17 AM in winter (MST). GitHub may start it late.
+    - cron: "17 13 * * *"
+  workflow_dispatch:   # "Run workflow" button on the Actions tab
+
+permissions:
+  contents: write      # to commit the updated fares.db
+
+concurrency:
+  group: daily-scan
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - run: pip install requests
+
+      # Searches already done today (Mountain time) are skipped, so re-running is safe.
+      - name: Run today's searches
+        env:
+          SERPAPI_API_KEY: ${{ secrets.SERPAPI_API_KEY }}
+        run: python serpapi_collect.py
+
+      # Runs even if the collector failed part-way, so searches already spent are never lost.
+      - name: Commit the updated database
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add output/serpapi/fares.db
+          if git diff --cached --quiet; then
+            echo "No new data."
+          else
+            git commit -m "Daily scan $(TZ=America/Denver date +%F)"
+            git pull --rebase
+            git push
+          fi
+
+      # Raw responses, the report and the CSV are not committed; they are kept here for 30 days.
+      - name: Keep raw responses and report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scan-${{ github.run_id }}
+          path: |
+            output/serpapi/raw/
+            output/serpapi/report.txt
+            output/serpapi/fare_observations.csv
+          retention-days: 30
+          if-no-files-found: ignore
