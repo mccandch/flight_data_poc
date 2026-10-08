@@ -22,6 +22,9 @@ def load(db_path=None):
     airports = {a["code"]: a for a in json.loads(
         (config.REFERENCE_DIR / "airports.json").read_text(encoding="utf-8"))}
 
+    if "trip_kind" not in obs.columns:  # database from before trip lengths were tracked
+        obs["trip_kind"] = "1 week"
+    obs["trip_kind"] = obs["trip_kind"].fillna("1 week")
     obs["observed"] = local_time(obs["observed_at"])
     obs["day"] = obs["observed"].dt.date
     obs["dep"] = pd.to_datetime(obs["departure_date"], errors="coerce")
@@ -71,35 +74,40 @@ def gf_url(origin, dest, dep, ret) -> str:
     return "https://www.google.com/travel/flights?q=" + quote(q)
 
 
+ROUTE = ["origin", "destination", "trip_kind"]   # a weekend trip is never compared with a 1-week one
+
+
 def daily_min(obs: pd.DataFrame) -> pd.DataFrame:
-    """Cheapest price per origin/destination/day (several searches can see the same airport)."""
-    idx = obs.groupby(["origin", "destination", "day"])["price"].idxmin()
+    """Cheapest price per route/trip length/day (several searches can see the same airport)."""
+    idx = obs.groupby(ROUTE + ["day"])["price"].idxmin()
     return obs.loc[idx]
 
 
 def latest_fares(obs: pd.DataFrame) -> pd.DataFrame:
-    """The most recent cheapest fare per origin/destination, plus:
-    vs_typical  price vs the median of this destination's PREVIOUS days (needs MIN_HISTORY_DAYS of them)
-    vs_google   price vs Google's 'usual price' from the most recent Deals list that included it."""
+    """The most recent cheapest fare per origin/destination/trip length, plus:
+    vs_typical  price vs the median of the same route + trip length on PREVIOUS days
+                (needs MIN_HISTORY_DAYS of them)
+    vs_google   price vs Google's 'usual price' from the most recent Deals list that included it
+                (Deals are 1-week trips, so only 1-week fares get this)."""
     dm = daily_min(obs)
-    latest = dm.loc[dm.groupby(["origin", "destination"])["day"].idxmax()].copy()
+    latest = dm.loc[dm.groupby(ROUTE)["day"].idxmax()].copy()
 
-    last_day = latest[["origin", "destination", "day"]].rename(columns={"day": "last_day"})
-    prior = dm.merge(last_day, on=["origin", "destination"])
+    last_day = latest[ROUTE + ["day"]].rename(columns={"day": "last_day"})
+    prior = dm.merge(last_day, on=ROUTE)
     prior = prior[prior["day"] < prior["last_day"]]
-    prior_stats = prior.groupby(["origin", "destination"]).agg(
-        prior_days=("day", "nunique"), median_price=("price", "median"))
-    all_stats = dm.groupby(["origin", "destination"]).agg(
-        days_tracked=("day", "nunique"), lowest_seen=("price", "min"))
-    latest = latest.join(all_stats, on=["origin", "destination"]).join(prior_stats, on=["origin", "destination"])
+    prior_stats = prior.groupby(ROUTE).agg(prior_days=("day", "nunique"), median_price=("price", "median"))
+    all_stats = dm.groupby(ROUTE).agg(days_tracked=("day", "nunique"), lowest_seen=("price", "min"))
+    latest = latest.join(all_stats, on=ROUTE).join(prior_stats, on=ROUTE)
     latest["prior_days"] = latest["prior_days"].fillna(0).astype(int)
     enough = latest["prior_days"] >= MIN_HISTORY_DAYS
     latest["vs_typical"] = (latest["price"] / latest["median_price"] - 1).where(enough)
 
-    google = (obs[obs["source"] == "google_flights_deals"].sort_values("observed")
+    google = (obs[(obs["source"] == "google_flights_deals") & (obs["trip_kind"] == "1 week")]
+              .sort_values("observed")
               .groupby(["origin", "destination"]).agg(google_usual=("typical_price", "last"),
                                                        google_usual_day=("day", "last")))
     latest = latest.drop(columns=["typical_price", "discount_pct"]).join(google, on=["origin", "destination"])
+    latest.loc[latest["trip_kind"] != "1 week", ["google_usual", "google_usual_day"]] = None
     latest["vs_google"] = latest["price"] / latest["google_usual"] - 1
     latest["nights"] = (latest["ret"] - latest["dep"]).dt.days
     return latest

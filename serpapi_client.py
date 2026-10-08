@@ -57,6 +57,18 @@ class SerpApiClient:
 # Normalization: one row per destination AIRPORT per search.
 # (Explore lists several "destinations" per airport, e.g. Denver + Rocky Mountain NP -> DEN.)
 # ---------------------------------------------------------------------------
+# The two engines number their trip-length presets differently.
+_TRIP_KINDS = {
+    "google_travel_explore": {1: "weekend", 2: "1 week", 3: "2 weeks"},
+    "google_flights_deals": {1: "1 week", 2: "weekend", 3: "2 weeks"},
+}
+
+
+def trip_kind(params: dict) -> str:
+    """'weekend' / '1 week' / '2 weeks' (both engines default to 1 week)."""
+    return _TRIP_KINDS.get(params.get("engine"), {}).get(int(params.get("travel_duration") or 0), "1 week")
+
+
 def normalize(body: dict, label: str, params: dict) -> tuple[list[dict], dict]:
     meta = body.get("search_metadata", {})
     observed_at = _meta_time(meta.get("created_at")) or now_utc()
@@ -87,6 +99,7 @@ def normalize(body: dict, label: str, params: dict) -> tuple[list[dict], dict]:
             "departure_date": dep,
             "return_date": ret,
             "trip_length": trip_length,
+            "trip_kind": trip_kind(params),
             "price": float(price),
             "currency": params.get("currency", "USD"),
             "airline": it.get("airline", ""),
@@ -126,7 +139,7 @@ CREATE TABLE IF NOT EXISTS fare_observations (
     search_row_id INTEGER REFERENCES searches(id),
     observed_at TEXT, source TEXT, search_label TEXT, origin TEXT, destination TEXT,
     destination_name TEXT, country TEXT, region TEXT, departure_date TEXT, return_date TEXT,
-    trip_length INTEGER, price REAL, currency TEXT, airline TEXT, stops INTEGER,
+    trip_length INTEGER, trip_kind TEXT, price REAL, currency TEXT, airline TEXT, stops INTEGER,
     flight_duration_min INTEGER, typical_price REAL, discount_pct REAL, hotel_price REAL,
     google_link TEXT
 );
@@ -134,7 +147,7 @@ CREATE INDEX IF NOT EXISTS ix_obs_route ON fare_observations(origin, destination
 """
 
 OBS_COLS = ["observed_at", "source", "search_label", "origin", "destination", "destination_name",
-            "country", "region", "departure_date", "return_date", "trip_length", "price", "currency",
+            "country", "region", "departure_date", "return_date", "trip_length", "trip_kind", "price", "currency",
             "airline", "stops", "flight_duration_min", "typical_price", "discount_pct", "hotel_price",
             "google_link"]
 
@@ -144,7 +157,17 @@ def connect() -> sqlite3.Connection:
     con = sqlite3.connect(config.SERPAPI_DB)
     con.row_factory = sqlite3.Row
     con.executescript(SCHEMA)
+    _migrate(con)
     return con
+
+
+def _migrate(con):
+    """Add columns introduced after the database was created (existing rows were all 1-week trips)."""
+    cols = {r[1] for r in con.execute("PRAGMA table_info(fare_observations)")}
+    if "trip_kind" not in cols:
+        con.execute("ALTER TABLE fare_observations ADD COLUMN trip_kind TEXT")
+        con.execute("UPDATE fare_observations SET trip_kind = '1 week' WHERE trip_kind IS NULL")
+        con.commit()
 
 
 def store(con, label, params, body, raw_file) -> tuple[int, dict]:

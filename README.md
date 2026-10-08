@@ -49,8 +49,16 @@ second run doesn't use more searches.
   different curated list of places. Google Explore only lists about 40 priced airports per
   search, so these variants find destinations the default search misses.
 - The PVU Google Deals search, every other day.
+- Other trip lengths (lowest priority, dropped first if the budget is tight), alternating days:
+  - even days: SLC **weekend** trips (US / default area)
+  - odd days: SLC **2-week** trips to one international region (rotating Europe, Asia, Caribbean,
+    South America, Oceania) and PVU **weekend** trips
 
-That's about 165 searches/month, under the 250 free.
+That's about 210-217 searches/month, under the 225 usable (250 free minus the 25-search reserve).
+
+Every fare is tagged with its trip length (`trip_kind`: weekend / 1 week / 2 weeks). "Our typical",
+the alerts and the price charts compare each trip length only with itself. Google's "usual" price
+comes from 1-week Deals results, so only 1-week fares get a "vs Google" figure.
 
 **Safety limits:**
 - Before each run, the collector checks your remaining searches using SerpApi's free account endpoint.

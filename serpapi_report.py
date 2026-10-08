@@ -94,8 +94,8 @@ def history_deals(con, origin, p):
     obs = con.execute("""SELECT * FROM fare_observations WHERE origin = ? AND source = 'google_travel_explore'
                          ORDER BY observed_at""", (origin,)).fetchall()
     series = defaultdict(list)
-    for r in obs:
-        series[r["destination"]].append(r)
+    for r in obs:  # a weekend trip is never compared with a 1-week one
+        series[(r["destination"], r["trip_kind"] or "1 week")].append(r)
     ready, flagged = 0, []
     for dest, rs in series.items():
         by_day = {}
@@ -148,9 +148,11 @@ def snapshot_cheapest(con, origin, p):
     """Latest price per destination; cheapest few per region. Context, not deal detection."""
     rows = con.execute("""SELECT f.* FROM fare_observations f
                           JOIN (SELECT destination, MAX(observed_at) m FROM fare_observations
-                                WHERE origin = ? AND source = 'google_travel_explore' GROUP BY destination) x
+                                WHERE origin = ? AND source = 'google_travel_explore'
+                                  AND COALESCE(trip_kind, '1 week') = '1 week' GROUP BY destination) x
                           ON f.destination = x.destination AND f.observed_at = x.m
-                          WHERE f.origin = ? AND f.source = 'google_travel_explore'""", (origin, origin)).fetchall()
+                          WHERE f.origin = ? AND f.source = 'google_travel_explore'
+                            AND COALESCE(f.trip_kind, '1 week') = '1 week'""", (origin, origin)).fetchall()
     by_region = defaultdict(list)
     for r in rows:
         if r["region"] != "default":

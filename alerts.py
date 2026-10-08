@@ -34,8 +34,13 @@ CATEGORIES = [
 SENT_SCHEMA = """
 CREATE TABLE IF NOT EXISTS alerts_sent (
     id INTEGER PRIMARY KEY, sent_at TEXT, category TEXT, origin TEXT, destination TEXT,
-    departure_date TEXT, return_date TEXT, price REAL
+    departure_date TEXT, return_date TEXT, price REAL, trip_kind TEXT
 )"""
+KEY = ["origin", "destination", "trip_kind"]
+
+
+def _sent_columns(con) -> set:
+    return {r[1] for r in con.execute("PRAGMA table_info(alerts_sent)")}
 
 
 def find_alerts(scan_day=None) -> dict[str, pd.DataFrame]:
@@ -54,12 +59,13 @@ def drop_already_sent(alerts: dict[str, pd.DataFrame], con) -> dict[str, pd.Data
     if not con.execute("SELECT 1 FROM sqlite_master WHERE name = 'alerts_sent'").fetchone():
         return alerts  # nothing sent yet
     since = (datetime.now(timezone.utc) - timedelta(days=config.ALERT_REPEAT_DAYS)).isoformat()
-    sent = pd.read_sql("SELECT category, origin, destination, MIN(price) AS last_price FROM alerts_sent "
-                       "WHERE sent_at >= ? GROUP BY category, origin, destination", con, params=(since,))
+    kind = "COALESCE(trip_kind, '1 week')" if "trip_kind" in _sent_columns(con) else "'1 week'"
+    sent = pd.read_sql(f"SELECT category, origin, destination, {kind} AS trip_kind, MIN(price) AS last_price "
+                       f"FROM alerts_sent WHERE sent_at >= ? GROUP BY 1, 2, 3, 4", con, params=(since,))
     out = {}
     for key, df in alerts.items():
-        prev = sent[sent["category"] == key].set_index(["origin", "destination"])["last_price"]
-        last = df.set_index(["origin", "destination"]).index.map(lambda k: prev.get(k))
+        prev = sent[sent["category"] == key].set_index(KEY)["last_price"]
+        last = df.set_index(KEY).index.map(lambda k: prev.get(k))
         keep = [lp is None or pd.isna(lp) or p <= lp * (1 - config.ALERT_REPEAT_MIN_DROP)
                 for p, lp in zip(df["price"], last)]
         out[key] = df[keep]
@@ -69,10 +75,13 @@ def drop_already_sent(alerts: dict[str, pd.DataFrame], con) -> dict[str, pd.Data
 def record_sent(alerts: dict[str, pd.DataFrame], con):
     now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
     con.execute(SENT_SCHEMA)
+    if "trip_kind" not in _sent_columns(con):  # table created before trip lengths were tracked
+        con.execute("ALTER TABLE alerts_sent ADD COLUMN trip_kind TEXT")
+        con.execute("UPDATE alerts_sent SET trip_kind = '1 week' WHERE trip_kind IS NULL")
     con.executemany(
-        "INSERT INTO alerts_sent (sent_at, category, origin, destination, departure_date, return_date, price) "
-        "VALUES (?,?,?,?,?,?,?)",
-        [(now, key, r.origin, r.destination, r.departure_date, r.return_date, float(r.price))
+        "INSERT INTO alerts_sent (sent_at, category, origin, destination, departure_date, return_date, price,"
+        " trip_kind) VALUES (?,?,?,?,?,?,?,?)",
+        [(now, key, r.origin, r.destination, r.departure_date, r.return_date, float(r.price), r.trip_kind)
          for key, df in alerts.items() for r in df.itertuples()])
     con.commit()
 
@@ -105,7 +114,8 @@ def build_email(alerts, day) -> tuple[str, str, str]:
     td = 'style="padding:6px 8px;border-bottom:1px solid #eee;font-size:14px;vertical-align:top"'
     parts_html = [f'<div style="font-family:Arial,sans-serif;max-width:900px">'
                   f'<h2 style="margin:0 0 4px">SLC / PVU fare alerts – {day:%A, %B %d}</h2>'
-                  f'<p style="color:#555;margin:0 0 16px">Cheapest ~1-week round trips found by today\'s scan. '
+                  f'<p style="color:#555;margin:0 0 16px">Cheapest round trips found by today\'s scan '
+                  f'(weekend, 1-week and 2-week trip searches). '
                   f'Prices change quickly – confirm on Google Flights before booking.</p>']
     parts_text = [f"SLC / PVU fare alerts – {day:%A, %B %d}\n"]
     for key, col, limit, title, note in CATEGORIES:
@@ -125,14 +135,14 @@ def build_email(alerts, day) -> tuple[str, str, str]:
             goog = f"{_money(r.google_usual)} ({_pct(r.vs_google)})" if pd.notna(r.vs_google) else "–"
             rows.append(
                 f"<tr><td {td}><b>{route}</b><br><span style='color:#666;font-size:12px'>"
-                f"{html.escape(r.region_group or '')}</span></td>"
+                f"{html.escape(r.region_group or '')} · {html.escape(r.trip_kind)} trip</span></td>"
                 f"<td {td}><b style='font-size:16px'>{_money(r.price)}</b></td>"
                 f"<td {td}>{_dates(r)}<br><span style='color:#666;font-size:12px'>"
                 f"{fares.stops_label(r.stops)} · {html.escape(r.airline or '')}</span></td>"
                 f"<td {td}>{ours}</td><td {td}>{goog}</td>"
                 f"<td {td}><a href='{html.escape(r.gf_link)}'>Google Flights</a></td></tr>")
             parts_text.append(
-                f"- {r.origin} -> {r.city} ({r.destination}): {_money(r.price)}, {_dates(r)}, "
+                f"- {r.origin} -> {r.city} ({r.destination}), {r.trip_kind} trip: {_money(r.price)}, {_dates(r)}, "
                 f"{fares.stops_label(r.stops)}, {r.airline} | our typical {ours} | Google usual {goog}\n"
                 f"  {r.gf_link}")
         parts_html.append(

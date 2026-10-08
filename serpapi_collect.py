@@ -15,6 +15,8 @@ from serpapi_report import run_report
 BASE = {"currency": "USD", "hl": "en", "gl": "us"}
 EXPLORE_1WK = {"engine": "google_travel_explore", "travel_duration": 2}  # Explore: 2 = 1 week
 DEALS_1WK = {"engine": "google_flights_deals", "travel_duration": 1}     # Deals:   1 = 1 week
+EXPLORE_WEEKEND = {"engine": "google_travel_explore", "travel_duration": 1}
+EXPLORE_2WK = {"engine": "google_travel_explore", "travel_duration": 3}
 
 
 def todays_plan(day: date) -> list[tuple[int, str, dict]]:
@@ -32,6 +34,13 @@ def todays_plan(day: date) -> list[tuple[int, str, dict]]:
     plan.append((3, f"SLC explore {variant}", {**BASE, **EXPLORE_1WK, "departure_id": "SLC", **extra}))
     if n % 2 == 0:
         plan.append((3, "PVU deals", {**BASE, **DEALS_1WK, "departure_id": "PVU"}))
+        plan.append((4, "SLC explore weekend", {**BASE, **EXPLORE_WEEKEND, "departure_id": "SLC"}))
+    else:
+        region2 = config.SERPAPI_2WK_REGIONS[(n // 2) % len(config.SERPAPI_2WK_REGIONS)]
+        plan.append((4, f"SLC explore {region2} 2wk", {**BASE, **EXPLORE_2WK, "departure_id": "SLC",
+                                                      "arrival_area_id": config.SERPAPI_REGIONS[region2],
+                                                      "_region": region2}))
+        plan.append((4, "PVU explore weekend", {**BASE, **EXPLORE_WEEKEND, "departure_id": "PVU"}))
     return sorted(plan, key=lambda p: p[0])
 
 

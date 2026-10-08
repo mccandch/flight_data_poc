@@ -71,6 +71,12 @@ SERPAPI_REGIONS = {
     "Oceania": "/m/05nrg",
 }
 
+# Other trip lengths (lowest priority, so the budget guard drops them first), alternating days:
+#   even days: SLC weekend trips (US / default area)
+#   odd days:  SLC 2-week trips to one of these regions (rotating) + PVU weekend trips
+# Adds ~1.5 searches/day -> ~210-217 a month in total, under the 225 usable (250 minus the reserve).
+SERPAPI_2WK_REGIONS = ["Europe", "Asia", "Caribbean", "South America", "Oceania"]
+
 # Extra SLC variants, one per day, rotating. Each returns a different curated list.
 # Tested 2026-09-27: new airports vs the default+region searches -> Canada 14, Outdoors 13,
 # Skiing 7, Beaches 6 (a "United States" area search added only 3, so it's not included).

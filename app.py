@@ -49,6 +49,9 @@ with st.sidebar:
                     "South America", "Oceania", "Other international"]
     available = [r for r in region_order if r in set(latest["region_group"])]
     regions = st.multiselect("Regions", available, default=available)
+    kinds = [k for k in ("weekend", "1 week", "2 weeks") if k in set(latest["trip_kind"])]
+    trip_kinds = st.multiselect("Trip length", kinds, default=kinds,
+                                help="Google's presets: weekend, ~1 week, ~2 weeks. Each is tracked separately.")
     max_possible = int(latest["price"].max()) + 1 if len(latest) else 1000
     max_price = st.slider("Max round-trip price ($)", 50, max(max_possible, 100), max_possible, step=25)
     stops = st.radio("Stops", ["Any", "Nonstop only", "1 stop or fewer"], horizontal=False)
@@ -60,7 +63,7 @@ with st.sidebar:
         st.rerun()
 
 view = latest[latest["origin"].isin(origins) & latest["region_group"].isin(regions)
-              & (latest["price"] <= max_price)]
+              & latest["trip_kind"].isin(trip_kinds) & (latest["price"] <= max_price)]
 if stops == "Nonstop only":
     view = view[view["stops"] == 0]
 elif stops == "1 stop or fewer":
@@ -76,13 +79,14 @@ if text:
 view = view.sort_values("price")
 
 
-def show_history(origin: str, dest: str):
-    rows = obs[(obs["origin"] == origin) & (obs["destination"] == dest)].sort_values("observed")
+def show_history(origin: str, dest: str, kind: str):
+    rows = obs[(obs["origin"] == origin) & (obs["destination"] == dest)
+               & (obs["trip_kind"] == kind)].sort_values("observed")
     if rows.empty:
         st.info("No observations.")
         return
     head = rows.iloc[-1]
-    st.subheader(f"{origin} → {head['city']} ({dest}), {head['country']}")
+    st.subheader(f"{origin} → {head['city']} ({dest}), {head['country']} · {kind} trips")
     dm = daily_min(rows).sort_values("day")
     c1, c2, c3, c4 = st.columns(4)
     cur = dm.iloc[-1]
@@ -149,6 +153,8 @@ def fares_grid(table: pd.DataFrame):
     text, num, date = "agTextColumnFilter", "agNumberColumnFilter", "agDateColumnFilter"
     gb.configure_column("origin", "From", filter=text, width=90, pinned="left")
     gb.configure_column("city", "Destination", filter=text, width=170, pinned="left")
+    gb.configure_column("trip_kind", "Trip", filter=text, width=105,
+                        headerTooltip="Google's trip-length preset: weekend, 1 week or 2 weeks.")
     gb.configure_column("destination", "Airport", filter=text, width=95)
     gb.configure_column("country", "Country", filter=text, width=140)
     gb.configure_column("region_group", "Region", filter=text, width=140)
@@ -196,21 +202,23 @@ with tab_fares:
         m3.metric("Cheapest international", f"${intl['price'].min():,.0f}",
                   f"{intl.iloc[0]['origin']} → {intl.iloc[0]['city']}", delta_color="off")
 
-    table = view[["origin", "city", "destination", "country", "region_group", "price", "departure_date",
+    table = view[["origin", "city", "destination", "country", "region_group", "trip_kind", "price",
+                  "departure_date",
                   "return_date", "nights", "stops", "airline", "lowest_seen", "days_tracked", "vs_typical",
                   "google_usual", "vs_google", "gf_link"]].reset_index(drop=True)
     table = table.astype(object).where(table.notna(), None)  # NaN -> blank cells in the grid
     grid = fares_grid(table)
     st.caption("Filter any column by typing in the box under its header, or click the filter icon next to "
                "the box for options like 'less than' or date ranges. "
-               "Prices are the cheapest ~1-week round trip Google found in the next ~6 months, any number of "
-               "stops, as of the last collection; confirm on Google Flights before booking. "
+               "Prices are the cheapest round trip Google found in the next ~6 months for each trip length "
+               "(weekend, 1 week, 2 weeks), any number of stops, as of the last collection; each trip length is "
+               "compared only with itself. Confirm on Google Flights before booking. "
                "Click a row to see its price history.")
     sel = grid.selected_rows
     if sel is not None and len(sel):
         r = sel.iloc[0] if isinstance(sel, pd.DataFrame) else sel[0]
         st.divider()
-        show_history(r["origin"], r["destination"])
+        show_history(r["origin"], r["destination"], r["trip_kind"])
 
 # ---- Map -------------------------------------------------------------------
 with tab_map:
@@ -241,13 +249,15 @@ with tab_map:
 
 # ---- Price history ---------------------------------------------------------
 with tab_hist:
-    opts = view.sort_values(["origin", "city"])
+    opts = view.sort_values(["origin", "city", "trip_kind"])
     if opts.empty:
         st.info("No destinations match the filters.")
     else:
-        labels = [f"{o} → {c} ({d})" for o, c, d in zip(opts["origin"], opts["city"], opts["destination"])]
+        labels = [f"{o} → {c} ({d}) · {k}" for o, c, d, k in
+                  zip(opts["origin"], opts["city"], opts["destination"], opts["trip_kind"])]
         choice = st.selectbox("Destination", range(len(labels)), format_func=lambda i: labels[i])
-        show_history(opts.iloc[choice]["origin"], opts.iloc[choice]["destination"])
+        sel_row = opts.iloc[choice]
+        show_history(sel_row["origin"], sel_row["destination"], sel_row["trip_kind"])
 
 # ---- Google Deals ----------------------------------------------------------
 with tab_deals:
