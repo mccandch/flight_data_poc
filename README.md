@@ -72,6 +72,25 @@ projects. The collector needs only `requests`.
 (main file `app.py`). Its only secret is `SERPAPI_API_KEY`, used by the balance check button;
 set it under the app's Settings → Secrets as `SERPAPI_API_KEY = "..."`.
 
+## Email alerts
+
+After each daily cloud scan, `alerts.py` emails the fares that are **at least 50% below** either:
+1. **Our typical price**: the destination's median over its previous days (needs 5+ days of history).
+2. **Google's "usual" price**: from Google's Deals list.
+
+The email has one section per category; a fare that qualifies for both shows up in both. A fare
+already emailed isn't sent again for 14 days unless its price drops at least another 5%. Days
+with nothing new send no email. Thresholds are in `config.py` (`ALERT_*`).
+
+**Setup (GitHub repo → Settings → Secrets and variables → Actions):**
+| Secret | Value |
+|---|---|
+| `GMAIL_USER` | the Gmail address that sends the alerts |
+| `GMAIL_APP_PASSWORD` | a Gmail app password (Google Account → Security → 2-Step Verification → App passwords) |
+| `ALERT_EMAIL_TO` | optional; where to send (defaults to `GMAIL_USER`; comma-separate several) |
+
+`python alerts.py --dry-run` writes `output/alerts_preview.html` and sends/records nothing.
+
 ## Output (`output/serpapi/`)
 
 | File | Contents |

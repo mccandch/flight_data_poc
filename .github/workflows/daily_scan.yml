@@ -23,13 +23,21 @@ jobs:
         with:
           python-version: "3.11"
 
-      - run: pip install requests
+      - run: pip install requests pandas
 
       # Searches already done today (Mountain time) are skipped, so re-running is safe.
       - name: Run today's searches
         env:
           SERPAPI_API_KEY: ${{ secrets.SERPAPI_API_KEY }}
         run: python serpapi_collect.py
+
+      # Emails today's big drops (see alerts.py). Skips quietly if the Gmail secrets aren't set.
+      - name: Email fare alerts
+        env:
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          ALERT_EMAIL_TO: ${{ secrets.ALERT_EMAIL_TO }}
+        run: python alerts.py
 
       # Runs even if the collector failed part-way, so searches already spent are never lost.
       - name: Commit the updated database

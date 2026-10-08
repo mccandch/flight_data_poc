@@ -81,6 +81,14 @@ SERPAPI_VARIANTS = {
     "Beaches": {"interest": "/m/0b3yr"},
 }
 
+# --- Email alerts (alerts.py, run after the daily scan) -----------------------
+# A fare is emailed when it's at least this far below either reference price.
+ALERT_MAX_VS_TYPICAL = -0.50   # vs this destination's median over its previous days ("our typical")
+ALERT_MAX_VS_GOOGLE = -0.50    # vs Google's "usual price" from its Deals list
+# Don't re-send the same destination/category within this many days unless the price fell further.
+ALERT_REPEAT_DAYS = 14
+ALERT_REPEAT_MIN_DROP = 0.05   # re-send early only if >= 5% cheaper than the last alert
+
 # --- Output -----------------------------------------------------------------
 OUTPUT_DIR = BASE_DIR / "output"
 RAW_DIR = OUTPUT_DIR / "raw"

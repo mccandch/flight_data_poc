@@ -2,9 +2,6 @@
 
     run_app.bat        or        .venv\\Scripts\\streamlit run app.py
 """
-import json
-import sqlite3
-from urllib.parse import quote
 
 import altair as alt
 import pandas as pd
@@ -14,102 +11,17 @@ import streamlit as st
 from st_aggrid import AgGrid, GridOptionsBuilder, JsCode
 
 import config
+import fares
+from fares import MIN_HISTORY_DAYS, daily_min, latest_fares, stops_label
 
 st.set_page_config(page_title="SLC/PVU Flight Browser", page_icon="✈️", layout="wide")
 
-MIN_HISTORY_DAYS = 5
-ALASKA_TZ = ("America/Anchorage", "America/Juneau", "America/Sitka", "America/Nome",
-             "America/Yakutat", "America/Metlakatla")
-US_TERRITORIES_CARIBBEAN = {"Puerto Rico", "U.S. Virgin Islands"}
 ORIGIN_COORDS = {"SLC": (40.7856, -111.9807), "PVU": (40.2181, -111.7222)}
 
 
-# ---------------------------------------------------------------------------
-# Data
-# ---------------------------------------------------------------------------
 @st.cache_data(ttl=300)
 def load():
-    con = sqlite3.connect(f"file:{config.SERPAPI_DB}?mode=ro", uri=True)
-    obs = pd.read_sql("SELECT * FROM fare_observations", con)
-    searches = pd.read_sql("SELECT * FROM searches", con)
-    con.close()
-    airports = {a["code"]: a for a in json.loads(
-        (config.REFERENCE_DIR / "airports.json").read_text(encoding="utf-8"))}
-
-    obs["observed"] = _local_time(obs["observed_at"])
-    obs["day"] = obs["observed"].dt.date
-    obs["dep"] = pd.to_datetime(obs["departure_date"], errors="coerce")
-    obs["ret"] = pd.to_datetime(obs["return_date"], errors="coerce")
-    obs["city"] = obs["destination_name"].str.split(" / ").str[0]
-    obs["region_group"] = _region_groups(obs, airports)
-    obs["lat"] = obs["destination"].map(lambda c: (airports.get(c) or {}).get("coordinates", {}).get("lat"))
-    obs["lon"] = obs["destination"].map(lambda c: (airports.get(c) or {}).get("coordinates", {}).get("lon"))
-    obs["gf_link"] = [gf_url(o, d, a, b) for o, d, a, b in
-                      zip(obs["origin"], obs["destination"], obs["departure_date"], obs["return_date"])]
-    searches["run"] = _local_time(searches["run_at"])
-    return obs, searches
-
-
-def _local_time(utc_strings: pd.Series) -> pd.Series:
-    """UTC ISO strings -> naive Mountain-time timestamps (the cloud server's own clock is UTC)."""
-    return pd.to_datetime(utc_strings, utc=True).dt.tz_convert(config.LOCAL_TZ_NAME).dt.tz_localize(None)
-
-
-def _region_groups(obs: pd.DataFrame, airports: dict) -> pd.Series:
-    """One display region per destination airport."""
-    searched = (obs[~obs["region"].isin(["default", "Hawaii", "United States"])]
-                .groupby("destination")["region"].agg(lambda s: s.mode().iat[0]))
-    groups = {}
-    for dest, country in obs[["destination", "country"]].drop_duplicates("destination").itertuples(index=False):
-        tz = (airports.get(dest) or {}).get("time_zone", "")
-        if tz == "Pacific/Honolulu":
-            g = "Hawaii"
-        elif country == "United States":
-            g = "Alaska" if tz in ALASKA_TZ else "Domestic"
-        elif country in US_TERRITORIES_CARIBBEAN:
-            g = "Caribbean"
-        elif dest in searched.index:
-            g = searched[dest]
-        elif country in ("Canada", "Mexico"):
-            g = "Canada & Mexico"
-        else:
-            g = "Other international"
-        groups[dest] = "Canada & Mexico" if g == "Canada" else g
-    return obs["destination"].map(groups)
-
-
-def gf_url(origin, dest, dep, ret) -> str:
-    if not dep:
-        return ""
-    q = f"Flights to {dest} from {origin} on {dep}" + (f" through {ret}" if ret else " oneway")
-    return "https://www.google.com/travel/flights?q=" + quote(q)
-
-
-def daily_min(obs: pd.DataFrame) -> pd.DataFrame:
-    """Cheapest price per origin/destination/day (several searches can see the same airport)."""
-    idx = obs.groupby(["origin", "destination", "day"])["price"].idxmin()
-    return obs.loc[idx]
-
-
-def latest_fares(obs: pd.DataFrame) -> pd.DataFrame:
-    dm = daily_min(obs)
-    latest = dm.loc[dm.groupby(["origin", "destination"])["day"].idxmax()].copy()
-    hist = dm.groupby(["origin", "destination"]).agg(
-        days_tracked=("day", "nunique"), lowest_seen=("price", "min"), median_price=("price", "median"))
-    latest = latest.join(hist, on=["origin", "destination"])
-    enough = latest["days_tracked"] >= MIN_HISTORY_DAYS + 1
-    latest["vs_typical"] = (latest["price"] / latest["median_price"] - 1).where(enough)
-    google = (obs[obs["source"] == "google_flights_deals"].sort_values("observed")
-              .groupby(["origin", "destination"])[["typical_price", "discount_pct"]].last())
-    latest = latest.drop(columns=["typical_price", "discount_pct"]).join(google, on=["origin", "destination"])
-    latest["nights"] = (latest["ret"] - latest["dep"]).dt.days
-    return latest
-
-
-def stops_label(s) -> str:
-    if pd.isna(s):
-        return "?"
-    return "Nonstop" if s == 0 else f"{int(s)} stop" + ("s" if s > 1 else "")
+    return fares.load()
 
 
 # ---------------------------------------------------------------------------
@@ -212,6 +124,14 @@ class LinkRenderer {
   }
   getGui() { return this.eGui; }
 }""")
+# Blank cells sort last in both directions (AG Grid puts them first by default)
+NULLS_LAST = JsCode("""
+function(a, b, nodeA, nodeB, isDesc) {
+  if (a == null && b == null) return 0;
+  if (a == null) return isDesc ? -1 : 1;
+  if (b == null) return isDesc ? 1 : -1;
+  return a - b;
+}""")
 # ISO "YYYY-MM-DD" strings -> date filter ("before", "after", "between")
 ISO_DATE_FILTER = {"comparator": JsCode("""
 function(filterDate, cell) {
@@ -241,11 +161,14 @@ def fares_grid(table: pd.DataFrame):
     gb.configure_column("airline", "Airline", filter=text, width=170)
     gb.configure_column("lowest_seen", "Lowest seen", filter=num, valueFormatter=MONEY_FMT, width=120)
     gb.configure_column("days_tracked", "Days tracked", filter=num, width=120)
-    gb.configure_column("vs_typical", "vs our typical", filter=num, valueFormatter=PCT_FMT, width=130,
-                        headerTooltip=f"Price vs this destination's median. Blank until "
-                                      f"{MIN_HISTORY_DAYS + 1} days of history.")
-    gb.configure_column("typical_price", "Google 'usual'", filter=num, valueFormatter=MONEY_FMT, width=130,
-                        headerTooltip="From Google's Deals list, when available (Google's opinion).")
+    gb.configure_column("vs_typical", "vs our typical", filter=num, comparator=NULLS_LAST, valueFormatter=PCT_FMT, width=130,
+                        headerTooltip=f"Price vs this destination's median over its previous days. Blank until "
+                                      f"it has {MIN_HISTORY_DAYS} previous days of history.")
+    gb.configure_column("google_usual", "Google 'usual'", filter=num, comparator=NULLS_LAST, valueFormatter=MONEY_FMT, width=130,
+                        headerTooltip="Google's 'usual price' from the latest Deals list that included this "
+                                      "destination. Blank if Google never listed it as a deal.")
+    gb.configure_column("vs_google", "vs Google", filter=num, comparator=NULLS_LAST, valueFormatter=PCT_FMT, width=115,
+                        headerTooltip="Price vs Google's 'usual price'. -50% = half of what Google says is usual.")
     gb.configure_column("gf_link", "Google Flights", filter=False, sortable=False,
                         cellRenderer=LINK_RENDERER, width=125)
     opts = gb.build()
@@ -275,7 +198,7 @@ with tab_fares:
 
     table = view[["origin", "city", "destination", "country", "region_group", "price", "departure_date",
                   "return_date", "nights", "stops", "airline", "lowest_seen", "days_tracked", "vs_typical",
-                  "typical_price", "gf_link"]].reset_index(drop=True)
+                  "google_usual", "vs_google", "gf_link"]].reset_index(drop=True)
     table = table.astype(object).where(table.notna(), None)  # NaN -> blank cells in the grid
     grid = fares_grid(table)
     st.caption("Filter any column by typing in the box under its header, or click the filter icon next to "
